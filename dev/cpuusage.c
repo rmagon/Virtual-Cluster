@@ -1,0 +1,40 @@
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+double getCpuChargeInPercents(void) {
+
+    /* Top command with a bit of text processing to extract the percentage */
+    const char * topCmd = "top -bn 2 -d 1 | grep '^Cpu.s.' | tail -n 1 | awk 'OMFT \"%.1f\" {print $2}'";
+    FILE *cmdStdout;
+    char percentStr[10];
+    char * commaPos;
+    const double errCode = -1;
+    double percent = errCode ;
+
+    cmdStdout = popen(topCmd, "r");
+    if (cmdStdout == NULL) {
+        printf("Failed to run command\n" );
+        return errCode;
+    }
+    fgets(percentStr, sizeof(percentStr), cmdStdout);
+
+    /* For me, there is a comma instead of a point 
+       I don't know if it depends of your language implementation 
+       We will replace it if there is any */
+    commaPos = strstr(percentStr, ",");
+    if (commaPos != NULL)
+        *commaPos = '.';
+
+    /* Convert the string to a double */
+    percent = atof(percentStr);
+
+    /* Cleaning */
+    pclose(cmdStdout);
+
+    return percent;
+}
+
+int main(){
+	printf("%f",getCpuChargeInPercents());
+
+}

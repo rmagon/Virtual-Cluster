@@ -1,0 +1,29 @@
+<domain type='kvm'>
+<name>demo</name>
+<uuid>c7a5fdbd-eeab-9415-926a-d65c16db1869</uuid>
+<memory>500000</memory>
+<vcpu>1</vcpu>
+<os>
+<type arch='x86_64' machine='pc'>hvm</type>
+<boot dev='hd'/>
+<boot dev='cdrom'/>
+</os>
+<clock offset='utc'/>
+<on_poweroff>destroy</on_poweroff>
+<on_reboot>restart</on_reboot>
+<on_crash>destroy</on_crash>
+<devices>
+<emulator>/usr/bin/kvm-spice</emulator>
+<disk type='file' device='disk'>
+<source file='/var/lib/libvirt/images/demo1000.img'/>
+<driver name='qemu' type='raw'/>
+<target dev='hda'/>
+</disk>
+<disk type='file' device='cdrom'>
+<source file='/var/lib/libvirt/images/ubuntu-14.04.1-desktop-amd64.iso'/>
+<target dev='hdc' bus='ide'/>
+</disk>
+<input type='mouse' bus='ps2'/>
+<graphics type='vnc' port='-1' listen='127.0.0.1'/>
+</devices>
+</domain>

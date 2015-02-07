@@ -1,0 +1,1 @@
+virsh snapshot-create-as $1 $2

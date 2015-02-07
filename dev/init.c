@@ -1,0 +1,838 @@
+/* compile with: gcc -g -Wall ex1.c -o ex -lvirt */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <libvirt/libvirt.h>
+#define threshold 10
+
+typedef struct Login
+{
+	int id;
+	char name[100];
+	char psw[100];
+}logins;
+logins login[100];
+typedef struct User
+{
+	int id;
+	//char password[50];
+	char vmName[40];
+	char password[40];
+}user;
+
+typedef struct UserIn
+{
+	int id;
+	//char password[50];
+	char vmName[40];
+	char ip[50];
+	char mac[50]; 
+}userinfo;
+
+typedef struct Mac
+{
+	char mac[50];
+	int avail;
+}macs;
+
+int sessionID = -1;
+char sessionName[100];
+typedef struct MachineStats{
+	char name[100];
+	int nVm;
+	char ip[50];
+}machineStats;
+
+
+macs physicalAddress[100];
+int macDBLen = 0;
+
+machineStats nicInfoArray[100];
+userinfo useri[100];
+user* currentUser;
+int currentLen = 0;
+int useriLen = 0;
+int getOption()
+{
+	int n;
+	printf("\n\t---------WECLOME--------------\n1.\tPrint Hostname\n");
+	printf("2.\tCLUSTER\tGet Cluster Details For User ID=%d\n",sessionID);
+	printf("3.\tCLUSTER\tCreate Cluster Using First Fit Algorithm\n");
+	printf("4.\tCLUSTER\tAdd Using First Fit Algorithm\n");
+	printf("5.\tCLUSTER\tCreate Cluster Using Round Robin\n");
+	printf("6.\tCLUSTER\tAdd Using Round Robin\n");
+	printf("7.\tDOMAIN\tResize an Existing Domain\n");
+	printf("8.\tDOMAIN\tChange RAM of an Existing Domain\n");
+	printf("9.\tAPPLICATION\tmpiRun\n");
+	printf("10.\tMANAGE\tGet Physical Address\n");
+	printf("11.\tSERVICES\tCreate snapshot\n");
+	printf("12.\tSERVICES\tRevert snapshot\n");
+	printf("14.\tSERVICES\tMigrate Virtual Machine\n");
+	printf("13.\tSERVICES\tLogOut\n");
+	scanf("%d",&n);
+	return n;
+}
+
+
+void mpiRun()
+{
+	int noVM;
+	char file[100];
+	char commandName[500] = "./ssh_sendfile.sh";
+	system(commandName);	
+}
+
+
+
+
+virConnectPtr getConnection(char* userName)
+{
+	virConnectPtr conn;
+	char connectionString[100];
+	sprintf(connectionString,"qemu+ssh://%s/system",userName);
+	conn = virConnectOpen(connectionString);
+	if (conn == NULL) 
+	{
+		printf("Failed to open connection to qemu:///system\n");
+	}
+	return conn;
+}
+
+int setUser(user *tempU)
+{
+	//user *tempU;
+	//tempU = (user *)malloc(sizeof(user));
+	FILE *fp = fopen("db-users","ab");
+	//printf("Enter Unique ID\n");
+	//scanf("%d",&tempU->id);
+	//printf("Enter Password\n");
+	//scanf("%s",tempU->password);
+	//printf("User saved\n ID: %d\nPassword: %s\n",tempU->id,tempU->password);
+	fwrite(tempU,sizeof(user),1,fp);
+	fclose(fp);
+}
+
+//Get all User Details
+user getUser()
+{
+	user *tempU;
+	tempU = (user *)malloc(sizeof(user));
+	FILE *fp = fopen("db-users","r");
+	fread(tempU,sizeof(tempU),1,fp);
+	printf("User found\n ID: %d\nPassword: %s\n",tempU->id,tempU->password);
+	fclose(fp);
+}
+
+void readAllUserInfo()
+{
+	int i=0;
+	FILE *fp = fopen("text-user","r");
+	while(fscanf(fp,"%d %s %s %s",&useri[i].id,useri[i].vmName,useri[i].ip,useri[i].mac)>0)
+	{
+		i++;
+	}
+	
+	fclose(fp);
+	useriLen = i;
+}
+
+void updateAllUserInfo()
+{
+	int i=0;
+	readAllUserInfo();
+	FILE *fp = fopen("text-user","w");
+	while(i<useriLen)
+	{
+		fprintf(fp,"%d %s %s %s\n",useri[i].id,useri[i].vmName,useri[i].ip,useri[i].mac);
+		i++;
+	}
+	fclose(fp);
+}
+
+void updateUserInfo(userinfo us)
+{
+	int i=0;
+	readAllUserInfo();
+	useri[useriLen++] = us;
+	FILE *fp = fopen("text-user","w");
+	while(i<useriLen)
+	{
+		fprintf(fp,"%d %s %s %s\n",sessionID,useri[i].vmName,useri[i].ip,useri[i].mac);
+		i++;
+	}
+	fclose(fp);
+}
+
+void PrintVMListForUser(){
+	readAllUserInfo();
+	int i =0 ;
+	printf("VM-NAME\t\tHOST-IP\n");
+	for(i = 0;i<useriLen;i++){
+		if(useri[i].id == sessionID){
+			printf("%s\t\t%s\n",useri[i].vmName,useri[i].ip);
+		}
+	}
+}
+
+int getMacOffset(char *fileName)
+{
+	int i=0,found=-1;
+	FILE *fp = fopen(fileName,"r");
+	while(fscanf(fp,"%s %d",physicalAddress[i].mac,&physicalAddress[i].avail)>0)
+	{
+		if((found==-1)&&(physicalAddress[i].avail==0))
+		{
+			found = i;
+			physicalAddress[i].avail = 1;
+		}
+		i++;
+	}
+	fclose(fp);
+	macDBLen = i;
+	return found;
+}
+
+void updateMacTable(char *fileName)
+{
+	int j=0;
+	FILE *fp = fopen(fileName,"w");
+	while(j<macDBLen)
+	{
+		fprintf(fp,"%s %d\n",physicalAddress[j].mac,physicalAddress[j].avail);
+		j++;
+	}
+	fclose(fp);
+}
+
+char* findAvailablePhysicalAddress()
+{
+	int j=0,i=0,found=-1;
+	found = getMacOffset("txt-mac");
+	updateMacTable("txt-mac");
+	return physicalAddress[found].mac;
+	
+}
+
+machineStats getNextAvailableHost(int numVm)
+{
+	int j=0,i=0,found=-1;
+	FILE *fp = fopen("text-machine","r");
+	while(fscanf(fp,"%s %d %s",nicInfoArray[i].name,&nicInfoArray[i].nVm,nicInfoArray[i].ip)>0)
+	{
+		if((found==-1)&&(((threshold - nicInfoArray[i].nVm) - numVm) >=0))
+		{
+			found = i;
+			nicInfoArray[i].nVm += numVm  ;
+		}
+		i++;
+	}
+	fclose(fp);
+	if(found != -1){
+		fp = fopen("text-machine","w");
+		while(j<i)
+		{
+			printf("%d",j);
+			fprintf(fp,"%s %d %s\n",nicInfoArray[j].name,nicInfoArray[j].nVm,nicInfoArray[j].ip);
+			j++;
+		}		
+		fclose(fp);
+	}else{
+		printf("host unavailable\n");
+	}
+	return nicInfoArray[found];
+	
+}
+
+void initUserArray()
+{
+	
+	int i;
+		currentUser = (user *)malloc(sizeof(user)*100);
+	//currentUserLen = i;
+
+}
+
+void readUsers()
+{
+	int len,i;
+	FILE *fp = fopen("db-users","r");
+	
+	len = fread(currentUser,sizeof(user),100,fp);
+	//printf(" %d Users found:\n",len);
+	/*for(i=0;i<len;i++)
+	{
+		printf("User found\n ID: %d\nPassword: %s\n",currentUser[i].id,currentUser[i].password);
+	}*/
+	currentLen = len;
+	fclose(fp);	
+}
+void resizeNewVM(virConnectPtr conn,char* vmname,unsigned long long size)
+{
+	char imgname[100];
+	strcpy(imgname,vmname);
+	strcat(imgname,".qcow2");
+	virStoragePoolPtr vptr = virStoragePoolLookupByName(conn,"default");
+	virStorageVolPtr sptr = virStorageVolLookupByName(vptr,imgname);
+	if(virStorageVolResize(sptr,size,0)==0)
+	{
+		printf("Resized\n");
+	}
+	virStoragePoolRefresh(vptr,0);
+}
+
+void cloneVM(virConnectPtr conn,machineStats hname,int inst)
+{
+	
+	char path[200],vmname[100];
+	char num[10];
+	char host[100];
+	char mac[50];
+	userinfo us;
+	int i,loopvar;
+	int mem,cpu;
+	FILE *fp;
+	unsigned long long hdd,hddByte;
+	sprintf(host,"%s@%s",hname.name,hname.ip);
+	strcpy(us.ip,hname.ip);
+	virDomainPtr dom;
+	user *tempU;
+	tempU = (user *)malloc(sizeof(user));
+	for(loopvar = 0;loopvar<inst;loopvar++)
+	{
+		fp = fopen("db-machinepostfix","r");
+		fscanf(fp,"%s",num);
+		fclose(fp);
+		i = atoi(num);
+		fp = fopen("db-machinepostfix","w");
+		fprintf(fp,"%d",i+1);
+		fclose(fp);
+		sprintf(us.vmName,"VM%s",num);
+		strcpy(mac,findAvailablePhysicalAddress());
+		strcpy(us.mac,mac);
+		updateUserInfo(us);
+		sprintf(path,"./clone.sh %s VM%s %s",host,num,mac);
+
+		printf("\nCreating VM %d",loopvar);
+		printf("Physical Memory Required (in GB - 2 GB Minimum)?\n");
+		fflush(stdin);		
+		scanf("%d",&mem);
+		fflush(stdin);
+		printf("Number of CPU(s)?\n");
+		fflush(stdin);		
+		scanf("%d",&cpu);
+		fflush(stdin);		
+		printf("Hard Disk Space Required (in GB - 10 GB Minimum)?\n");
+		fflush(stdin);		
+		scanf("%lld",&hdd); 
+		fflush(stdin);
+		system(path);
+		
+		//write the new VMs to users file
+		//strcpy(tempU->vmName,vmname);
+		//setUser(tempU);
+
+		dom = virDomainLookupByName(conn,us.vmName);
+		hddByte = hdd*1024*1024*1024;
+		resizeNewVM(conn,us.vmName,hddByte);
+		virDomainCreate(dom);
+		virDomainSetVcpus(dom,cpu);
+		virDomainSetMemory(dom,mem*1024*1024);
+		free(dom);
+	}
+}
+
+
+void resizeRAM(char* vmname,char* host)
+{
+	virConnectPtr conn;
+	virDomainPtr dom;
+	int i,numSnap, sizeGB;
+	unsigned long long resizeFactor;
+	char command[100];
+	char IP[100];
+	char imageName[100];
+	int mem =10;
+	strcpy(command," ");
+	strcpy(imageName,vmname);
+	strcat(imageName,".qcow2");
+	readAllUserInfo();
+	
+	for(i=0;i<useriLen;i++){
+		if(strcmp(vmname,useri[i].vmName) == 0){
+			sprintf(IP,"%s@%s",host,useri[i].ip);
+			break;
+		}	
+	}
+
+	printf("Physical Memory Required (in GB - 2 GB Minimum)?\n");
+	fflush(stdin);		
+	scanf("%d",&mem);
+	conn = getConnection(IP);
+	dom = virDomainLookupByName(conn,vmname);
+
+	virDomainSetMemory(dom,mem*1024*1024);
+	printf("Done!");
+}
+
+
+void resize(char* vmname,char* host)
+{
+	virConnectPtr conn;
+	virDomainPtr dom;
+	int i,numSnap, sizeGB;
+	unsigned long long resizeFactor;
+	char command[100];
+	char IP[100];
+	char imageName[100];
+	int mem =10;
+	strcpy(command," ");
+	strcpy(imageName,vmname);
+	strcat(imageName,".qcow2");
+	readAllUserInfo();
+	
+	for(i=0;i<useriLen;i++){
+		if(strcmp(vmname,useri[i].vmName) == 0){
+			sprintf(IP,"%s@%s",host,useri[i].ip);
+			break;
+		}	
+	}
+
+	printf("Physical Memory Required (in GB - SHOULD BE RESPECTABLE)?\n");
+	fflush(stdin);		
+	scanf("%lld",&resizeFactor);
+	conn = getConnection(IP);
+	dom = virDomainLookupByName(conn,vmname);
+
+	virStoragePoolPtr vptr = virStoragePoolLookupByName(conn,"default");
+	virStorageVolPtr sptr = virStorageVolLookupByName(vptr,imageName);
+	if(virStorageVolResize(sptr,resizeFactor*1024*1024*1024,0)==0)
+	{
+		printf("Done!");
+	}
+	virStoragePoolRefresh(vptr,0);
+}
+
+void createDomain(virConnectPtr conn)
+{
+	char buff[10000];
+	char xmlconfig[100000];
+	FILE *fp = fopen("newxml","r");
+	while(fgets(buff, 10000, fp)!=NULL)
+   	{
+   		strcat(xmlconfig,buff);
+   		
+   	}
+   	virStoragePoolPtr vptr = virStoragePoolLookupByName(conn,"default");
+   	
+   	//printf("%s",xmlconfig);
+   	const char* xmlfile = "<volume><name>demo1000.img</name><capacity unit=\"G\">10</capacity></volume>";
+   	virStorageVolPtr sptr = virStorageVolCreateXML(vptr,xmlfile,0);
+   	
+	virDomainPtr dom;
+	dom = virDomainDefineXML(conn, xmlconfig);
+	if (!dom) {
+	fprintf(stderr, "Unable to define persistent guest configuration");
+	return;
+	}
+	if (virDomainCreate(dom) < 0) {
+	fprintf(stderr, "Unable to boot guest configuration");
+	}
+	printf("Done!");
+}
+
+void shutdownActiveDomain(virConnectPtr conn)
+{
+	int numDomains;
+	int *activeDomains;
+	int loopvar;
+	int userInput;
+	virDomainPtr dom;
+	virDomainPtr domTemp;
+	numDomains = virConnectNumOfDomains(conn);
+	activeDomains = malloc(sizeof(int) * numDomains);
+	numDomains = virConnectListDomains(conn, activeDomains, numDomains);
+	printf("Select any active domain to stop: (%d)\n",numDomains);
+	for (loopvar = 0 ; loopvar < numDomains ; loopvar++) 
+	{
+		
+		domTemp = virDomainLookupByID(conn,activeDomains[loopvar]);
+		printf("%d. %s\n", loopvar,virDomainGetName(domTemp));
+		free(domTemp);
+	}
+	
+	scanf("%d",&userInput);
+	
+	for (loopvar = 0 ; loopvar < numDomains ; loopvar++) 
+	{
+		if(userInput == loopvar)
+		{
+			dom = virDomainLookupByID(conn,activeDomains[loopvar]);
+		}
+	}
+	if(virDomainDestroy(dom)==0)
+	printf("VM Force Shutdown success!\n");
+	else
+	printf("Error in shutting down VM\n");
+	free(activeDomains);
+}
+
+void selectInactiveDomain(virConnectPtr conn)
+{
+	int numInactiveDomains;
+	char **inactiveDomains;
+	int userInput;
+	int loopvar;
+	virDomainPtr dom;
+	char selectedDomain[100];
+	/*char buff[10000];
+	char xmlconfig[100000];
+	FILE *fp = fopen("xmlconfig","r");
+	while(fscanf(fp, "%s", buff)!=EOF)
+   	{
+   		strcat(xmlconfig,buff);
+   		
+   	}
+   	printf("%s",xmlconfig);*/
+	numInactiveDomains = virConnectNumOfDefinedDomains(conn);
+	inactiveDomains = malloc(sizeof(char *) * numInactiveDomains);
+	numInactiveDomains = virConnectListDefinedDomains(conn, inactiveDomains, numInactiveDomains);
+	printf("Select any inactive domain name to start: (%d)\n",numInactiveDomains);
+	for (loopvar = 0 ; loopvar < numInactiveDomains ; loopvar++) 
+	{
+		printf("%d. %s\n", loopvar,inactiveDomains[loopvar]);
+	}
+	
+	scanf("%d",&userInput);
+	
+	for (loopvar = 0 ; loopvar < numInactiveDomains ; loopvar++) 
+	{
+		if(userInput == loopvar)
+		{
+			dom = virDomainLookupByName(conn, inactiveDomains[loopvar]);
+			strcpy(selectedDomain,inactiveDomains[loopvar]);
+		}
+		free(inactiveDomains[loopvar]);
+	}
+	free(inactiveDomains);	
+	
+	if (virDomainCreate(dom) < 0) 
+	{
+	    virDomainFree(dom);
+	    fprintf(stderr, "Cannot boot guest");
+	    return;
+	}
+	
+	printf("Guest %s has booted",virDomainGetName(dom));
+	virDomainFree(dom);
+
+}
+
+
+void createSnapShotForGivenVM(char* vmname,char* host)
+{
+	virConnectPtr conn;
+	virDomainPtr dom;
+	int i,numSnap;
+	char command[100];
+	char IP[100];
+	char snapshotXML[100];
+	
+	readAllUserInfo();
+	
+	for(i=0;i<useriLen;i++){
+		if(strcmp(vmname,useri[i].vmName) == 0){
+			sprintf(IP,"%s@%s",host,useri[i].ip);
+			break;
+		}	
+	}
+	conn = getConnection(IP);
+	dom = virDomainLookupByName(conn,vmname);
+	numSnap = virDomainSnapshotNum(dom,0);
+	fflush(stdin);
+	sprintf(command,"./vm-createCP.sh %s %s snap%d",IP,vmname,numSnap+1);
+	printf("COMMAND IS\n:%s",command);
+	system(command);
+	/*sprintf(snapshotXML,"<domainsnapshot><name>snap%d</name></domainsnapshot>",numSnap+1);
+	printf("I WILL NOW PRINT\n");	
+	fflush(stdin);
+	printf(" sgsdgsdgsdfg %s",snapshotXML);
+	
+	if(virDomainSnapshotCreateXML(dom,snapshotXML,0) == NULL)
+	{
+		printf("\nSnapshot Created\n");
+	}
+	else
+	{
+		printf("\nUnable to create snapshot\n");
+	}*/
+
+}
+
+void revertVM(char* vmname,char* host)
+{
+	virConnectPtr conn;
+	virDomainPtr dom;
+	virDomainSnapshotPtr sptr;
+	
+	
+	int i,numSnap;
+	char command[100];
+	char IP[100];
+
+	readAllUserInfo();
+	
+	for(i=0;i<useriLen;i++){
+		if(strcmp(vmname,useri[i].vmName) == 0){
+			sprintf(IP,"%s@%s",host,useri[i].ip);
+			break;
+		}	
+	}
+	conn = getConnection(IP);
+	dom = virDomainLookupByName(conn,vmname);
+
+	sptr = virDomainSnapshotCurrent	(dom,0);
+	virDomainRevertToSnapshot(sptr,0);
+}
+
+void vmMigrate(char *vmname,char *host1,char *ip){
+	int i;
+	char host[100],path[100];
+	char oldIP[100];
+	
+	sprintf(host,"%s@%s",host1,ip);
+	readAllUserInfo();	
+	for(i=0;i<useriLen;i++){
+		if(strcmp(vmname,useri[i].vmName) == 0){
+			sprintf(oldIP,"%s@%s",host1,useri[i].ip);
+			strcpy(useri[i].ip,ip);
+			break;
+		}	
+	}
+	sprintf(path,"./vm-migrate.sh %s %s %s",oldIP,vmname,host);
+	updateAllUserInfo();
+	system(path);
+}
+
+int logout()
+{
+	sessionID = -1;
+}
+
+char* doTHIS(int i)
+{
+	int inst;
+	machineStats hName;
+	virConnectPtr conn;
+	char *host;
+	char nhost[100];
+	int loopvar;
+	char *output = malloc(1000);
+	char vmHandle[100],destination[100];
+	
+	strcpy(output,"");
+	conn = virConnectOpen("qemu:///system");
+	if (conn == NULL) 
+	{
+		strcpy(output, "Failed to open connection to qemu:///system\n");
+		return output;
+	}
+	switch(i)
+	{
+	case 1:
+		host = virConnectGetHostname(conn);
+		strcpy(output, host);
+		free(host);
+		break;
+	case 2:
+		PrintVMListForUser();
+		break;
+	case 3:
+		printf("Number of VMs Required?\n");
+		scanf("%d",&inst);
+		hName = getNextAvailableHost(inst);
+  		sprintf(nhost,"%s@%s",hName.name,hName.ip);
+		cloneVM(getConnection(nhost),hName,inst);
+		break;
+	case 4:
+		printf("Number of VMs Required?\n");
+		scanf("%d",&inst);
+		hName = getNextAvailableHost(inst);
+  		sprintf(nhost,"%s@%s",hName.name,hName.ip);
+		cloneVM(getConnection(nhost),hName,inst);
+		break;
+	case 5:
+		printf("Number of VMs Required?\n");
+		scanf("%d",&inst);
+		hName = getNextAvailableHost(inst);
+  		sprintf(nhost,"%s@%s",hName.name,hName.ip);
+		cloneVM(getConnection(nhost),hName,inst);
+		break;
+	case 6:
+		printf("Number of VMs Required?\n");
+		scanf("%d",&inst);
+		hName = getNextAvailableHost(inst);
+  		sprintf(nhost,"%s@%s",hName.name,hName.ip);
+		cloneVM(getConnection(nhost),hName,inst);
+		break;
+	case 7:
+		printf("Enter VM Handle\n");
+		scanf("%s",vmHandle);
+		resize(vmHandle,"admin-17");
+		break;
+	case 8:
+		printf("Enter VM Handle\n");
+		scanf("%s",vmHandle);
+		resizeRAM(vmHandle,"admin-17");
+		break;
+	case 9:
+		mpiRun();
+		break;
+	case 10:
+		printf("%s \n",findAvailablePhysicalAddress());
+		break; 
+	case 11:
+		printf("Enter VM Handle\n");
+		scanf("%s",vmHandle);
+		createSnapShotForGivenVM(vmHandle,"admin-17");
+		break;
+	
+	case 12:
+		printf("Enter VM Handle\n");
+		scanf("%s",vmHandle);
+		
+		revertVM(vmHandle,"admin-17");
+		break;
+	case 13:
+		printf("Enter VM Handle\n");
+		scanf("%s",vmHandle);
+		printf("Enter destination IP\n");
+		scanf("%s",destination);
+		vmMigrate(vmHandle,"admin-17",destination);
+		break;
+	case 14:
+		logout();
+		break;
+	default:
+		strcpy(output,"DEFAULT CASE - NO OUTPUT\n");
+		break;
+	}
+	
+	virConnectClose(conn);
+	return output;
+}
+
+
+int signIn()
+{
+	char psw[100];
+	int sessionValid = 0;
+	int id;
+	printf("Enter ID\n");
+	scanf("%d",&id);
+	printf("Enter Password [8 char max]\n");
+	scanf("%s",psw);
+	
+	int j=0,i=0;
+	FILE *fp = fopen("txt-login","r");
+	while(fscanf(fp,"%d %s %s",&login[i].id,login[i].name,login[i].psw)>0)
+	{
+		if((login[i].id == id)&&(strcmp(psw,login[i].psw)==0))
+		{
+			sessionValid = 1;
+			sessionID = id;
+			strcpy(sessionName,login[i].name);
+		}
+		i++;
+	}
+	fclose(fp);
+	
+	if(sessionValid == 1)
+	{
+		
+		return 1;
+	}
+	else
+	{
+		return 0;
+	}	
+}
+
+int signUp()
+{
+	char name[100];
+	char psw[100];
+	char po[10];
+	printf("Enter Name [8 char max]\n");
+	scanf("%s",name);
+	printf("Enter Password [8 char max]\n");
+	scanf("%s",psw);
+	
+	int j=0,i=0;
+	FILE *fp = fopen("txt-login","r");
+	while(fscanf(fp,"%d %s %s",&login[i].id,login[i].name,login[i].psw)>0)
+	{
+		i++;
+	}
+	fclose(fp);
+
+	login[i].id = i;
+	strcpy(login[i].name,name);
+	strcpy(login[i].psw,psw);
+	
+	fp = fopen("txt-login","w");
+	while(j<=i)
+	{
+		fprintf(fp,"%d %s %s\n",login[j].id,login[j].name,login[j].psw);
+		j++;
+	}		
+	fclose(fp);
+	printf("Congratulations %s \n---------YOUR ID IS %d----------\nPress Enter to Continue",name,i);
+	return 1;	
+}
+int main(int argc, char *argv[])
+{
+	system("clear");
+	initUserArray();
+	int j=1;
+	int option = 0,id;
+	char po[10];
+	while(j)
+	{
+		
+		if(sessionID==-1)
+		{
+			
+			printf("Virtual Cluster Creator\nSelect Option to continue\n1. Log In\n2. Sign Up\n\n");
+			scanf("%d",&option);
+			if(option == 1)
+			{
+				if(signIn())
+				{
+					printf("Congratulations %s \n---------YOUR ID IS %d----------\nType OK and Press to Continue",sessionName,sessionID);
+				}
+				else
+				{
+					printf("ERROR\n");
+				}
+			}
+			else if(option ==2)
+			{
+				if (signUp() == 1)
+				{
+				
+				}
+			}
+			else
+			{
+			}
+			
+		}
+		else
+		{
+		int n = getOption();
+		printf("%s\n",doTHIS(n));
+		printf("Enter 0 to quit, 1 to repeat....");
+		scanf("%d",&j);
+		}
+	}
+}
